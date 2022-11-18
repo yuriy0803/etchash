@@ -19,7 +19,7 @@ package etchash
 import (
 	"math/big"
 
-	"github.com/etclabscore/core-geth/common"
+	"github.com/ethereum/go-ethereum/common"
 )
 
 type Block interface {
