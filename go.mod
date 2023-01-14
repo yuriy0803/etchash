@@ -1,4 +1,4 @@
-module github.com/yuriy0803/etchash
+module etchash
 
 go 1.15
 
