@@ -1,11 +1,10 @@
 module github.com/yuriy0803/etchash
 
-go 1.19
+go 1.18
 
 require (
 	github.com/edsrzf/mmap-go v1.0.0
 	github.com/ethereum/go-ethereum v1.11.2
-	github.com/hashicorp/golang-lru v0.5.4
 	golang.org/x/crypto v0.1.0
 	golang.org/x/sys v0.5.0
 )

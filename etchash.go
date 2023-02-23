@@ -40,9 +40,9 @@ import (
 	"github.com/edsrzf/mmap-go"
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/common/hexutil"
+	lrupkg "github.com/ethereum/go-ethereum/common/lru"
 	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/ethereum/go-ethereum/log"
-	"github.com/hashicorp/golang-lru/simplelru"
 )
 
 var (
@@ -207,40 +207,50 @@ func memoryMapAndGenerate(path string, size uint64, lock bool, generator func(bu
 	return memoryMap(path, lock)
 }
 
+type cacheOrDataset interface {
+	*cache | *dataset
+}
+
 // lru tracks caches or datasets by their last use time, keeping at most N of them.
-type lru struct {
+type lru[T cacheOrDataset] struct {
 	what string
-	new  func(epoch uint64, epochLength uint64) interface{}
+	new  func(epoch uint64, epochLength uint64) T
 	mu   sync.Mutex
 	// Items are kept in a LRU cache, but there is a special case:
 	// We always keep an item for (highest seen epoch) + 1 as the 'future item'.
-	cache      *simplelru.LRU
+	cache      lrupkg.BasicLRU[uint64, T]
 	future     uint64
-	futureItem interface{}
+	futureItem T
 }
 
 // newlru create a new least-recently-used cache for either the verification caches
 // or the mining datasets.
-func newlru(what string, maxItems int, new func(epoch uint64, epochLength uint64) interface{}) *lru {
-	if maxItems <= 0 {
-		maxItems = 1
+func newlru[T cacheOrDataset](maxItems int, new func(epoch uint64, epochLength uint64) T) *lru[T] {
+	var what string
+	switch any(T(nil)).(type) {
+	case *cache:
+		what = "cache"
+	case *dataset:
+		what = "dataset"
+	default:
+		panic("unknown type")
 	}
-	cache, _ := simplelru.NewLRU(maxItems, func(key, value interface{}) {
-		log.Trace("Evicted etchash "+what, "epoch", key)
-	})
-	return &lru{what: what, new: new, cache: cache}
+	return &lru[T]{
+		what:  what,
+		new:   new,
+		cache: lrupkg.NewBasicLRU[uint64, T](maxItems),
+	}
 }
 
 // get retrieves or creates an item for the given epoch. The first return value is always
 // non-nil. The second return value is non-nil if lru thinks that an item will be useful in
 // the near future.
-func (lru *lru) get(epoch uint64, epochLength uint64, ecip1099FBlock *uint64) (item, future interface{}) {
+func (lru *lru[T]) get(epoch uint64, epochLength uint64, ecip1099FBlock *uint64) (item, future T) {
 	lru.mu.Lock()
 	defer lru.mu.Unlock()
 
-	cacheKey := fmt.Sprintf("%d-%d", epoch, epochLength)
 	// Get or create the item for the requested epoch.
-	item, ok := lru.cache.Get(cacheKey)
+	item, ok := lru.cache.Get(epoch)
 	if !ok {
 		if lru.future > 0 && lru.future == epoch {
 			item = lru.futureItem
@@ -248,7 +258,7 @@ func (lru *lru) get(epoch uint64, epochLength uint64, ecip1099FBlock *uint64) (i
 			log.Trace("Requiring new etchash "+lru.what, "epoch", epoch)
 			item = lru.new(epoch, epochLength)
 		}
-		lru.cache.Add(cacheKey, item)
+		lru.cache.Add(epoch, item)
 	}
 
 	// Ensure pre-generation handles ecip-1099 changeover correctly
@@ -334,7 +344,7 @@ func isBadCache(epoch uint64, epochLength uint64, data []uint32) (bool, string) 
 
 // newCache creates a new etchash verification cache and returns it as a plain Go
 // interface to be usable in an LRU cache.
-func newCache(epoch uint64, epochLength uint64, uip1Epoch *uint64) interface{} {
+func newCache(epoch uint64, epochLength uint64, uip1Epoch *uint64) *cache {
 	return &cache{epoch: epoch, epochLength: epochLength, uip1Epoch: uip1Epoch}
 }
 
@@ -586,7 +596,7 @@ type dataset struct {
 
 // newDataset creates a new etchash mining dataset and returns it as a plain Go
 // interface to be usable in an LRU cache.
-func newDataset(epoch uint64, epochLength uint64, uip1Epoch *uint64) interface{} {
+func newDataset(epoch uint64, epochLength uint64, uip1Epoch *uint64) *dataset {
 	return &dataset{epoch: epoch, epochLength: epochLength, uip1Epoch: uip1Epoch}
 }
 
