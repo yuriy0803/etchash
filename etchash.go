@@ -90,6 +90,7 @@ func isLittleEndian() bool {
 }
 
 // uint32Array2ByteArray returns the bytes represented by uint32 array c
+// nolint:unused
 func uint32Array2ByteArray(c []uint32) []byte {
 	buf := make([]byte, len(c)*4)
 	if isLittleEndian() {
@@ -249,8 +250,12 @@ func (lru *lru[T]) get(epoch uint64, epochLength uint64, ecip1099FBlock *uint64)
 	lru.mu.Lock()
 	defer lru.mu.Unlock()
 
+	// Use the sum of epoch and epochLength as the cache key.
+	// This is not perfectly safe, but it's good enough (at least for the first 30000 epochs, or the first 427 years).
+	cacheKey := epochLength + epoch
+
 	// Get or create the item for the requested epoch.
-	item, ok := lru.cache.Get(epoch)
+	item, ok := lru.cache.Get(cacheKey)
 	if !ok {
 		if lru.future > 0 && lru.future == epoch {
 			item = lru.futureItem
@@ -258,7 +263,7 @@ func (lru *lru[T]) get(epoch uint64, epochLength uint64, ecip1099FBlock *uint64)
 			log.Trace("Requiring new etchash "+lru.what, "epoch", epoch)
 			item = lru.new(epoch, epochLength)
 		}
-		lru.cache.Add(epoch, item)
+		lru.cache.Add(cacheKey, item)
 	}
 
 	// Ensure pre-generation handles ecip-1099 changeover correctly
@@ -299,55 +304,6 @@ type cache struct {
 	used        time.Time
 }
 
-// isBadCache checks a given caches/datsets keccak256 hash against bad caches (ecip-1099)
-// this is incase the client has already written non-ecip1099 caches to disk,
-// instead of blindly trusting as seedhashes/filename match, compare checksums.
-func isBadCache(epoch uint64, epochLength uint64, data []uint32) (bool, string) {
-	// Check for bad caches/datasets at ecip-1099 transitions
-	if epochLength == epochLengthECIP1099 {
-		var badCache string
-		var badDataset string
-		var hash string
-
-		if epoch == 42 { // mordor
-			hash = uint32Array2Keccak256(data)
-			// bad cache generated using: geth makecache 2520001 [path] --epoch.length=30000
-			badCache = "0xafa2a00911843b0a67314614e629d9e550ef74da4dca2215c475a0f93333aedc"
-			// bad dataset generated using: geth makedag 2520001 [path] --epoch.length=30000
-			badDataset = "0xc07d08a9f8a2b5af0e87f68c8df9eaf28d7cef2ae3fe86d8c306d9139861c15f"
-		}
-		if epoch == 195 { // classic mainnet
-			hash = uint32Array2Keccak256(data)
-			// bad cache generated using: geth makecache 11700001 [path] --epoch.length=30000
-			badCache = "0x5794130ea9e433185214fb4032edbd3473499267e197d9003a6a1a5bd300b3e5"
-			// bad dataset generated using: geth makedag 11700001 [path] --epoch.length=30000
-			badDataset = "0xe9cc9df33ee6de075558fb07fd67d59068a9751c36c6e9ae38163f6da90a2240"
-		}
-		if epoch == 196 { // classic mainnet
-			hash = uint32Array2Keccak256(data)
-			// bad cache generated using: geth makecache 11760001 [path] --epoch.length=30000
-			badCache = "0x4a37ee8c8cb4f75c05e23369cadeec7a6ed7386226a629794a733e0249d92d5f"
-			// bad dataset generated using: geth makedag 11760001 [path] --epoch.length=30000
-			badDataset = "0xf281b059ce535a7c146c00ada26114406bc08a9657bf9147542f92f9f9f08bf2"
-		}
-		// check if cache is bad
-		if hash != "" && (hash == badCache || hash == badDataset) {
-			// cache/dataset is bad.
-			return true, hash
-		}
-		// cache is good
-		return false, hash
-	}
-	// cache is not ecip-1099 enabled
-	return false, ""
-}
-
-// newCache creates a new etchash verification cache and returns it as a plain Go
-// interface to be usable in an LRU cache.
-func newCache(epoch uint64, epochLength uint64, uip1Epoch *uint64) *cache {
-	return &cache{epoch: epoch, epochLength: epochLength, uip1Epoch: uip1Epoch}
-}
-
 // generate ensures that the cache content is generated before use.
 func (c *cache) generate(dir string, limit int, lock bool, test bool) {
 	c.once.Do(func() {
@@ -385,13 +341,7 @@ func (c *cache) generate(dir string, limit int, lock bool, test bool) {
 		c.dump, c.mmap, c.cache, err = memoryMap(path, lock)
 		if err == nil {
 			logger.Debug("Loaded old etchash cache from disk")
-			isBad, hash := isBadCache(c.epoch, c.epochLength, c.cache)
-			if isBad {
-				// cache is bad. Set err, then continue as if cache could not be read from disk.
-				err = fmt.Errorf("Cache with hash %s has been flagged as bad", hash)
-			} else {
-				return
-			}
+			return
 		}
 		logger.Debug("Failed to load old etchash cache", "err", err)
 
@@ -640,16 +590,7 @@ func (d *dataset) generate(dir string, limit int, lock bool, test bool) {
 		d.dump, d.mmap, d.dataset, err = memoryMap(path, lock)
 		if err == nil {
 			logger.Debug("Loaded old etchash dataset from disk", "path", path)
-			isBad, hash := isBadCache(d.epoch, d.epochLength, d.dataset)
-			if isBad {
-				// dataset is bad. Continue as if cache could not be read from disk.
-				err = fmt.Errorf("Dataset with hash %s has been flagged as bad", hash)
-				// regenerating DAG is a intensive process, we should let the user know
-				// why it's happening.
-				logger.Error("Bad DAG on disk", "path", path, "hash", hash)
-			} else {
-				return
-			}
+			return
 		}
 		logger.Debug("Failed to load old etchash dataset", "err", err)
 
