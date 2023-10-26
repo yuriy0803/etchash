@@ -20,7 +20,6 @@ import (
 	"encoding/binary"
 	"hash"
 	"math/big"
-	"reflect"
 	"runtime"
 	"sync"
 	"sync/atomic"
@@ -180,10 +179,14 @@ func generateCache(dest []uint32, epoch uint64, epochLength uint64, uip1Epoch *u
 		logFn("Generated ethash verification dataset", "epochLength", epochLength, "elapsed", common.PrettyDuration(elapsed))
 	}()
 	// Convert our destination slice to a byte buffer
-	header := *(*reflect.SliceHeader)(unsafe.Pointer(&dest))
-	header.Len *= 4
-	header.Cap *= 4
-	cache := *(*[]byte)(unsafe.Pointer(&header))
+	// Vorher:
+	// header := *(*reflect.SliceHeader)(unsafe.Pointer(&dest))
+	// header.Len *= 4
+	// header.Cap *= 4
+	// cache := *(*[]byte)(unsafe.Pointer(&header))
+
+	// Nachher:
+	cache := unsafe.Slice((*byte)(unsafe.Pointer(&dest)), len(dest)*4)
 
 	// Calculate the number of theoretical rows (we'll store in one buffer nonetheless)
 	size := uint64(len(cache))
@@ -319,10 +322,11 @@ func generateDataset(dest []uint32, epoch uint64, epochLength uint64, cache []ui
 	swapped := !isLittleEndian()
 
 	// Convert our destination slice to a byte buffer
-	header := *(*reflect.SliceHeader)(unsafe.Pointer(&dest))
-	header.Len *= 4
-	header.Cap *= 4
-	dataset := *(*[]byte)(unsafe.Pointer(&header))
+	//header := *(*reflect.SliceHeader)(unsafe.Pointer(&dest))
+	//header.Len *= 4
+	//header.Cap *= 4
+	//dataset := *(*[]byte)(unsafe.Pointer(&header))
+	dataset := unsafe.Slice((*byte)(unsafe.Pointer(&dest)), len(dest)*4)
 
 	// Generate the dataset on many goroutines since it takes a while
 	threads := runtime.NumCPU()
@@ -355,9 +359,9 @@ func generateDataset(dest []uint32, epoch uint64, epochLength uint64, cache []ui
 				}
 				copy(dataset[index*hashBytes:], item)
 
-				if status := progress.Add(1); status % uint64(percent) == 0 {
+				if status := progress.Add(1); status%uint64(percent) == 0 {
 					logger.Info("Generating DAG in progress", "epochLength", epochLength, "percentage", status*100/(size/hashBytes), "elapsed", common.PrettyDuration(time.Since(start)))
-				}				
+				}
 			}
 		}(i)
 	}

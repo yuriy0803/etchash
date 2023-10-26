@@ -538,13 +538,13 @@ func (l *Light) getCache(blockNum uint64) *cache {
 
 // / dataset wraps an etchash dataset with some metadata to allow easier concurrent use.
 type dataset struct {
-	epoch       uint64    // Epoch for which this cache is relevant
-	epochLength uint64    // Epoch length (ECIP-1099)
-	uip1Epoch   *uint64   // Epoch for UIP-1 activation
-	dump        *os.File  // File descriptor of the memory mapped cache
-	mmap        mmap.MMap // Memory map itself to unmap before releasing
-	dataset     []uint32  // The actual cache data content
-	once        sync.Once // Ensures the cache is generated only once
+	epoch       uint64      // Epoch for which this cache is relevant
+	epochLength uint64      // Epoch length (ECIP-1099)
+	uip1Epoch   *uint64     // Epoch for UIP-1 activation
+	dump        *os.File    // File descriptor of the memory mapped cache
+	mmap        mmap.MMap   // Memory map itself to unmap before releasing
+	dataset     []uint32    // The actual cache data content
+	once        sync.Once   // Ensures the cache is generated only once
 	done        atomic.Bool // Atomic flag to determine generation status
 	used        time.Time
 }
