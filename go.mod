@@ -4,9 +4,9 @@ go 1.19
 
 require (
 	github.com/edsrzf/mmap-go v1.1.0
-	github.com/ethereum/go-ethereum v1.12.2
-	golang.org/x/crypto v0.13.0
-	golang.org/x/sys v0.12.0
+	github.com/yuriy0803/core-geth1 v0.0.0-20231028143816-9cc1f7728b95
+	golang.org/x/crypto v0.14.0
+	golang.org/x/sys v0.13.0
 )
 
 require (
