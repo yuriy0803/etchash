@@ -20,6 +20,7 @@ import (
 	"encoding/binary"
 	"hash"
 	"math/big"
+	"reflect"
 	"runtime"
 	"sync"
 	"sync/atomic"
@@ -30,7 +31,6 @@ import (
 	"github.com/yuriy0803/core-geth1/common/bitutil"
 	"github.com/yuriy0803/core-geth1/crypto"
 	"github.com/yuriy0803/core-geth1/log"
-	"golang.org/x/crypto/blake2b"
 	"golang.org/x/crypto/sha3"
 )
 
@@ -146,18 +146,6 @@ func seedHash(block uint64) []byte {
 	return seed
 }
 
-// blakeHasher creates a repetitive hasher, allowing the same hash data structures
-// to be reused between hash runs instead of requiring new ones to be created.
-// The returned function is not thread safe!
-// based on previous Sum based makeHasher as blake2b lacks a Read function - iquidus
-func blakeHasher(h hash.Hash) hasher {
-	return func(dest []byte, data []byte) {
-		h.Write(data)
-		h.Sum(dest[:0])
-		h.Reset()
-	}
-}
-
 // generateCache creates a verification cache of a given size for an input seed.
 // The cache production process involves first sequentially filling up 32 MB of
 // memory, then performing two passes of Sergio Demian Lerner's RandMemoHash
@@ -179,14 +167,10 @@ func generateCache(dest []uint32, epoch uint64, epochLength uint64, uip1Epoch *u
 		logFn("Generated ethash verification dataset", "epochLength", epochLength, "elapsed", common.PrettyDuration(elapsed))
 	}()
 	// Convert our destination slice to a byte buffer
-	// Vorher:
-	// header := *(*reflect.SliceHeader)(unsafe.Pointer(&dest))
-	// header.Len *= 4
-	// header.Cap *= 4
-	// cache := *(*[]byte)(unsafe.Pointer(&header))
-
-	// Nachher:
-	cache := unsafe.Slice((*byte)(unsafe.Pointer(&dest)), len(dest)*4)
+	header := *(*reflect.SliceHeader)(unsafe.Pointer(&dest))
+	header.Len *= 4
+	header.Cap *= 4
+	cache := *(*[]byte)(unsafe.Pointer(&header))
 
 	// Calculate the number of theoretical rows (we'll store in one buffer nonetheless)
 	size := uint64(len(cache))
@@ -213,8 +197,13 @@ func generateCache(dest []uint32, epoch uint64, epochLength uint64, uip1Epoch *u
 	// uip1 - (ubqhash)
 	if uip1Epoch != nil {
 		if epoch >= *uip1Epoch {
-			h, _ := blake2b.New512(nil)
-			keccak512 = blakeHasher(h) // use blakeHasher instead of makeHasher here.
+			h := sha3.New512()
+			keccak512 = func(dest []byte, data []byte) {
+				h.Reset()
+				h.Write(data)
+				result := h.Sum(nil)
+				copy(dest, result)
+			}
 		}
 	}
 
@@ -322,11 +311,10 @@ func generateDataset(dest []uint32, epoch uint64, epochLength uint64, cache []ui
 	swapped := !isLittleEndian()
 
 	// Convert our destination slice to a byte buffer
-	//header := *(*reflect.SliceHeader)(unsafe.Pointer(&dest))
-	//header.Len *= 4
-	//header.Cap *= 4
-	//dataset := *(*[]byte)(unsafe.Pointer(&header))
-	dataset := unsafe.Slice((*byte)(unsafe.Pointer(&dest)), len(dest)*4)
+	header := *(*reflect.SliceHeader)(unsafe.Pointer(&dest))
+	header.Len *= 4
+	header.Cap *= 4
+	dataset := *(*[]byte)(unsafe.Pointer(&header))
 
 	// Generate the dataset on many goroutines since it takes a while
 	threads := runtime.NumCPU()
