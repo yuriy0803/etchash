@@ -20,7 +20,6 @@ import (
 	"encoding/binary"
 	"hash"
 	"math/big"
-	"reflect"
 	"runtime"
 	"sync"
 	"sync/atomic"
@@ -31,6 +30,7 @@ import (
 	"github.com/yuriy0803/core-geth1/common/bitutil"
 	"github.com/yuriy0803/core-geth1/crypto"
 	"github.com/yuriy0803/core-geth1/log"
+	"golang.org/x/crypto/blake2b"
 	"golang.org/x/crypto/sha3"
 )
 
@@ -146,6 +146,18 @@ func seedHash(block uint64) []byte {
 	return seed
 }
 
+// blakeHasher creates a repetitive hasher, allowing the same hash data structures
+// to be reused between hash runs instead of requiring new ones to be created.
+// The returned function is not thread safe!
+// based on previous Sum based makeHasher as blake2b lacks a Read function - iquidus
+func blakeHasher(h hash.Hash) hasher {
+	return func(dest []byte, data []byte) {
+		h.Write(data)
+		h.Sum(dest[:0])
+		h.Reset()
+	}
+}
+
 // generateCache creates a verification cache of a given size for an input seed.
 // The cache production process involves first sequentially filling up 32 MB of
 // memory, then performing two passes of Sergio Demian Lerner's RandMemoHash
@@ -167,10 +179,14 @@ func generateCache(dest []uint32, epoch uint64, epochLength uint64, uip1Epoch *u
 		logFn("Generated ethash verification dataset", "epochLength", epochLength, "elapsed", common.PrettyDuration(elapsed))
 	}()
 	// Convert our destination slice to a byte buffer
-	header := *(*reflect.SliceHeader)(unsafe.Pointer(&dest))
-	header.Len *= 4
-	header.Cap *= 4
-	cache := *(*[]byte)(unsafe.Pointer(&header))
+	// Vorher:
+	// header := *(*reflect.SliceHeader)(unsafe.Pointer(&dest))
+	// header.Len *= 4
+	// header.Cap *= 4
+	// cache := *(*[]byte)(unsafe.Pointer(&header))
+
+	// Nachher:
+	cache := unsafe.Slice((*byte)(unsafe.Pointer(&dest)), len(dest)*4)
 
 	// Calculate the number of theoretical rows (we'll store in one buffer nonetheless)
 	size := uint64(len(cache))
@@ -197,13 +213,8 @@ func generateCache(dest []uint32, epoch uint64, epochLength uint64, uip1Epoch *u
 	// uip1 - (ubqhash)
 	if uip1Epoch != nil {
 		if epoch >= *uip1Epoch {
-			h := sha3.New512()
-			keccak512 = func(dest []byte, data []byte) {
-				h.Reset()
-				h.Write(data)
-				result := h.Sum(nil)
-				copy(dest, result)
-			}
+			h, _ := blake2b.New512(nil)
+			keccak512 = blakeHasher(h) // use blakeHasher instead of makeHasher here.
 		}
 	}
 
@@ -311,10 +322,11 @@ func generateDataset(dest []uint32, epoch uint64, epochLength uint64, cache []ui
 	swapped := !isLittleEndian()
 
 	// Convert our destination slice to a byte buffer
-	header := *(*reflect.SliceHeader)(unsafe.Pointer(&dest))
-	header.Len *= 4
-	header.Cap *= 4
-	dataset := *(*[]byte)(unsafe.Pointer(&header))
+	//header := *(*reflect.SliceHeader)(unsafe.Pointer(&dest))
+	//header.Len *= 4
+	//header.Cap *= 4
+	//dataset := *(*[]byte)(unsafe.Pointer(&header))
+	dataset := unsafe.Slice((*byte)(unsafe.Pointer(&dest)), len(dest)*4)
 
 	// Generate the dataset on many goroutines since it takes a while
 	threads := runtime.NumCPU()
@@ -426,29 +438,6 @@ func hashimotoFull(dataset []uint32, hash []byte, nonce uint64) ([]byte, []byte)
 		return dataset[offset : offset+hashWords]
 	}
 	return hashimoto(hash, nonce, uint64(len(dataset))*4, lookup)
-}
-
-func frankomoto(hash []byte, nonce uint64) ([]byte, []byte) {
-
-	// Combine header+nonce into a 64 byte seed
-	digest := make([]byte, 40)
-	copy(digest, hash)
-	binary.LittleEndian.PutUint64(digest[32:], nonce)
-
-	digest = crypto.Keccak512(digest)
-
-	// Here it would be best to change digest into 32 byte slice
-	// we could use the first or second half, doesnt really matter
-	// Because common.ByteToHash in consensus.go is lobbing off the first 32 bytes
-	// We could do this here instead
-	// d0 := digest[:32] // gives us the first 32 bytes
-	d1 := digest[32:] // gives us the last 32 bytes
-	// we could use d0 as the MixDigest and keccak_256(d1) < target
-	// return d0, crypto.Keccak256(d1)
-	// ORRRRRR We could just change Keccak512 to sha256 or sha3.New256() or sha512_256 or blake2b
-	// because they would output a 32byte hash
-
-	return d1, crypto.Keccak256(digest)
 }
 
 // datasetSizes is a lookup table for the ethash dataset size for the first 2048

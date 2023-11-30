@@ -1,8 +1,8 @@
 # go-etchash
 
-Etchash go module intended for use by open-etc-pool-friends.
+Etchash go module intended for use by core-pool (and open-etc-pool-friends).
 
-* supports frkhash, etchash, ethash & ubqhash
+* supports etchash, ethash & ubqhash
 
 ### usage (etchash)
 
