@@ -2,7 +2,7 @@
 
 Etchash go module intended for use by core-pool (and open-etc-pool-friends).
 
-* supports etchash, ethash & ubqhash
+* supports Frkhash, etchash, ethash & ubqhash
 
 ### usage (etchash)
 

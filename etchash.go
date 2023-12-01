@@ -407,6 +407,15 @@ func (c *cache) compute(dagSize uint64, hash common.Hash, nonce uint64) (common.
 	return common.BytesToHash(digest), common.BytesToHash(result)
 }
 
+func (c *cache) computeFrkhash(hash common.Hash, nonce uint64) (common.Hash, common.Hash) {
+	// ret := C.frkhash_light_compute_internal(cache.ptr, C.uint64_t(dagSize), hashToH256(hash), C.uint64_t(nonce))
+	digest, result := frankomoto(hash.Bytes(), nonce)
+	// Caches are unmapped in a finalizer. Ensure that the cache stays alive
+	// until after the call to hashimotoLight so it's not unmapped while being used.
+	runtime.KeepAlive(c)
+	return common.BytesToHash(digest), common.BytesToHash(result)
+}
+
 // Light implements the Verify half of the proof of work. It uses a few small
 // in-memory caches to verify the nonces found by Full.
 type Light struct {
@@ -419,6 +428,7 @@ type Light struct {
 	NumCaches      int // Maximum number of caches to keep before eviction (only init, don't modify)
 	ecip1099FBlock *uint64
 	uip1Epoch      *uint64
+	xip5Block      *uint64
 }
 
 // Verify checks whether the block's nonce is valid.
@@ -451,7 +461,14 @@ func (l *Light) Verify(block Block) (bool, int64) {
 		dagSize = dagSizeForTesting
 	}
 	// Recompute the hash using the cache.
-	mixDigest, result := cache.compute(uint64(dagSize), block.HashNoNonce(), block.Nonce())
+	var mixDigest common.Hash
+	var result common.Hash
+
+	if l.xip5Block != nil && blockNum >= *l.xip5Block {
+		mixDigest, result = cache.computeFrkhash(block.HashNoNonce(), block.Nonce())
+	} else {
+		mixDigest, result = cache.compute(uint64(dagSize), block.HashNoNonce(), block.Nonce())
+	}
 
 	// avoid mixdigest malleability as it's not included in a block's "hashNononce"
 	if block.MixDigest() != mixDigest {
@@ -471,6 +488,9 @@ func (l *Light) Compute(blockNum uint64, hashNoNonce common.Hash, nonce uint64) 
 
 	cache := l.getCache(blockNum)
 	dagSize := datasetSize(epoch)
+	if blockNum >= *l.xip5Block {
+		return cache.computeFrkhash(hashNoNonce, nonce)
+	}
 	return cache.compute(uint64(dagSize), hashNoNonce, nonce)
 }
 
@@ -676,6 +696,7 @@ type Full struct {
 	current        *dataset   // current full DAG
 	ecip1099FBlock *uint64
 	uip1Epoch      *uint64
+	xip5Block      *uint64
 }
 
 func (pow *Full) getDAG(blockNum uint64) (d *dataset) {
@@ -695,6 +716,16 @@ func (pow *Full) getDAG(blockNum uint64) (d *dataset) {
 }
 
 func (pow *Full) Search(block Block, stop <-chan struct{}, index int) (nonce uint64, mixDigest []byte) {
+	if pow.xip5Block != nil {
+		if *pow.xip5Block >= block.NumberU64() {
+			return pow.SearchFrk(block, stop, index)
+		}
+	}
+
+	return pow.SearchDag(block, stop, index)
+}
+
+func (pow *Full) SearchDag(block Block, stop <-chan struct{}, index int) (nonce uint64, mixDigest []byte) {
 	dag := pow.getDAG(block.NumberU64())
 
 	r := rand.New(rand.NewSource(time.Now().UnixNano()))
@@ -730,6 +761,55 @@ func (pow *Full) Search(block Block, stop <-chan struct{}, index int) (nonce uin
 			// result := h256ToHash(ret.result).Big()
 			bigres := common.BytesToHash(result).Big()
 			// TODO: disagrees with the spec https://github.com/ethereum/wiki/wiki/Etchash#mining
+			// TODO: disagrees with the spec https://github.com/ethereum/wiki/wiki/Frkhash#mining
+			if digest != nil && bigres.Cmp(target) <= 0 {
+				mixDigest = digest
+				atomic.AddInt32(&pow.hashRate, -previousHashrate)
+				return nonce, mixDigest
+			}
+			nonce += 1
+		}
+
+		if !pow.turbo {
+			time.Sleep(20 * time.Microsecond)
+		}
+	}
+}
+
+func (pow *Full) SearchFrk(block Block, stop <-chan struct{}, index int) (nonce uint64, mixDigest []byte) {
+	r := rand.New(rand.NewSource(time.Now().UnixNano()))
+	diff := block.Difficulty()
+
+	i := int64(0)
+	starti := i
+	start := time.Now().UnixNano()
+	previousHashrate := int32(0)
+
+	nonce = uint64(r.Int63())
+	hash := block.HashNoNonce()
+	target := new(big.Int).Div(maxUint256, diff)
+	for {
+		select {
+		case <-stop:
+			atomic.AddInt32(&pow.hashRate, -previousHashrate)
+			return 0, nil
+		default:
+			i++
+
+			// we don't have to update hash rate on every nonce, so update after
+			// first nonce check and then after 2^X nonces
+			if i == 2 || ((i % (1 << 16)) == 0) {
+				elapsed := time.Now().UnixNano() - start
+				hashes := (float64(1e9) / float64(elapsed)) * float64(i-starti)
+				hashrateDiff := int32(hashes) - previousHashrate
+				previousHashrate = int32(hashes)
+				atomic.AddInt32(&pow.hashRate, hashrateDiff)
+			}
+
+			digest, result := frankomoto(hash.Bytes(), nonce)
+			// result := h256ToHash(ret.result).Big()
+			bigres := common.BytesToHash(result).Big()
+			// TODO: disagrees with the spec https://github.com/ethereum/wiki/wiki/Frkhash#mining
 			if digest != nil && bigres.Cmp(target) <= 0 {
 				mixDigest = digest
 				atomic.AddInt32(&pow.hashRate, -previousHashrate)
@@ -761,17 +841,26 @@ type Etchash struct {
 }
 
 // New creates an instance of the proof of work.
-func New(ecip1099FBlock *uint64, uip1FEpoch *uint64) *Etchash {
+func New(ecip1099FBlock *uint64, uip1FEpoch *uint64, xip5Block *uint64) *Etchash {
 	var light = new(Light)
 	light.ecip1099FBlock = ecip1099FBlock
+	light.xip5Block = xip5Block
 	light.uip1Epoch = uip1FEpoch
-	return &Etchash{light, &Full{turbo: true, ecip1099FBlock: ecip1099FBlock, uip1Epoch: uip1FEpoch}}
+	return &Etchash{light, &Full{turbo: true, ecip1099FBlock: ecip1099FBlock, uip1Epoch: uip1FEpoch, xip5Block: xip5Block}}
+}
+
+func NewForTestingFrk(xip5Block *uint64) *Etchash {
+	var light = new(Light)
+	light.ecip1099FBlock = nil
+	light.xip5Block = xip5Block
+	light.uip1Epoch = nil
+	return &Etchash{light, &Full{turbo: true, ecip1099FBlock: nil, uip1Epoch: nil, xip5Block: xip5Block}}
 }
 
 // NewShared creates an instance of the proof of work., where a single instance
 // of the Light cache is shared across all instances created with NewShared.
-func NewShared(ecip1099FBlock *uint64, uip1FEpoch *uint64) *Etchash {
-	return &Etchash{sharedLight, &Full{turbo: true, ecip1099FBlock: ecip1099FBlock, uip1Epoch: uip1FEpoch}}
+func NewShared(ecip1099FBlock *uint64, uip1FEpoch *uint64, xip5Block *uint64) *Etchash {
+	return &Etchash{sharedLight, &Full{turbo: true, ecip1099FBlock: ecip1099FBlock, uip1Epoch: uip1FEpoch, xip5Block: xip5Block}}
 }
 
 // NewForTesting creates a proof of work for use in unit tests.
@@ -780,7 +869,7 @@ func NewShared(ecip1099FBlock *uint64, uip1FEpoch *uint64) *Etchash {
 //
 // Nonces found by a testing instance are not verifiable with a
 // regular-size cache.
-func NewForTesting(ecip1099FBlock *uint64, uip1FEpoch *uint64) (*Etchash, error) {
+func NewForTesting(ecip1099FBlock *uint64, uip1FEpoch *uint64, xip5Block *uint64) (*Etchash, error) {
 	dir, err := ioutil.TempDir("", "etchash-test")
 	if err != nil {
 		return nil, err
