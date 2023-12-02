@@ -488,7 +488,9 @@ func (l *Light) Compute(blockNum uint64, hashNoNonce common.Hash, nonce uint64) 
 
 	cache := l.getCache(blockNum)
 	dagSize := datasetSize(epoch)
-	if blockNum >= *l.xip5Block {
+	// Check if xip5Block is not nil and blockNum is greater than or equal to xip5Block
+	if l.xip5Block != nil && blockNum >= *l.xip5Block {
+		// If yes, perform the computation for Frkhash
 		return cache.computeFrkhash(hashNoNonce, nonce)
 	}
 	return cache.compute(uint64(dagSize), hashNoNonce, nonce)
