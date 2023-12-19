@@ -5,7 +5,7 @@ go 1.19
 require (
 	github.com/edsrzf/mmap-go v1.1.0
 	github.com/yuriy0803/core-geth1 v1.12.18-0.20231209165046-f7272fa572bc
-	golang.org/x/crypto v0.16.0
+	golang.org/x/crypto v0.17.0
 	golang.org/x/sys v0.15.0
 )
 
