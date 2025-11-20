@@ -1,14 +1,14 @@
 module github.com/yuriy0803/etchash
 
-go 1.23.0
+go 1.24.0
 
 toolchain go1.24.2
 
 require (
 	github.com/edsrzf/mmap-go v1.2.0
 	github.com/yuriy0803/core-geth1 v1.12.18-0.20231209165046-f7272fa572bc
-	golang.org/x/crypto v0.37.0
-	golang.org/x/sys v0.32.0
+	golang.org/x/crypto v0.45.0
+	golang.org/x/sys v0.38.0
 )
 
 require (
